@@ -28,7 +28,9 @@ object Recommender {
             .eachCount()
         if (counts.isEmpty()) return@withContext emptyList()
 
-        val known = counts.keys.map { norm(it) }.toSet()
+        // Какие песни у вас уже есть: название (без скобок и знаков) -> исполнители с таким названием.
+        val owned: Map<String, List<String>> = library
+            .groupBy({ titleKey(it.title) }, { norm(it.artist) })
         // Берём самых частых исполнителей, но каждый раз разную десятку — чтобы «Обновить» давало новое.
         val seeds = counts.entries.sortedByDescending { it.value }.take(20).shuffled().take(10)
 
@@ -49,9 +51,9 @@ object Recommender {
             }.awaitAll().flatten()
         }
 
-        // 2. Чем чаще артист «похож» на ваших любимых, тем выше он. Тех, кто уже у вас, убираем.
+        // 2. Чем чаще артист «похож» на ваших любимых, тем выше он.
+        // Исполнителей из вашей библиотеки не исключаем: скрываем только песни, которые у вас уже есть.
         val picked = related
-            .filter { norm(it.name) !in known }
             .groupBy { it.id }
             .map { (id, list) -> Triple(id, list.first().name, list.sumOf { it.weight }) }
             .shuffled()
@@ -63,9 +65,13 @@ object Recommender {
         val tracks = coroutineScope {
             picked.map { artist ->
                 async {
-                    val data = getJson("$API/artist/${artist.first}/top?limit=4")?.optJSONArray("data")
+                    // Берём с запасом: часть песен может оказаться у вас, их отбросим.
+                    val data = getJson("$API/artist/${artist.first}/top?limit=12")?.optJSONArray("data")
                         ?: return@async emptyList<Track>()
-                    (0 until data.length()).mapNotNull { i -> data.optJSONObject(i)?.let(::toTrack) }
+                    (0 until data.length())
+                        .mapNotNull { i -> data.optJSONObject(i)?.let(::toTrack) }
+                        .filterNot { isOwned(it, owned) }
+                        .take(4)
                 }
             }.awaitAll().flatten()
         }
@@ -101,6 +107,20 @@ object Recommender {
     }
 
     private fun norm(s: String) = s.trim().lowercase()
+
+    /** Название без скобок «(Remastered)», «[feat. …]», суффикса « - …» и без знаков препинания. */
+    private fun titleKey(title: String): String = title.lowercase()
+        .replace(Regex("[(\\[].*?[)\\]]"), " ")
+        .substringBefore(" - ")
+        .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        .trim()
+
+    /** Песня уже у вас, если совпало название и исполнитель (допускаем «A» против «A feat. B»). */
+    private fun isOwned(track: Track, owned: Map<String, List<String>>): Boolean {
+        val artists = owned[titleKey(track.title)] ?: return false
+        val a = norm(track.artist)
+        return artists.any { it == a || it.contains(a) || a.contains(it) }
+    }
 
     private fun getJson(url: String): JSONObject? = try {
         val c = URL(url).openConnection() as HttpURLConnection
