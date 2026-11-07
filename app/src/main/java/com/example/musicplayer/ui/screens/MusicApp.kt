@@ -3,7 +3,16 @@ package com.example.musicplayer.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.app.Activity
 import android.content.Intent
+import android.provider.MediaStore
+import androidx.activity.result.IntentSenderRequest
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material3.Checkbox
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -106,6 +115,8 @@ fun MusicApp(vm: MusicViewModel) {
         buildList {
             add(audioPermission)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
+            // На Android 10 и старше удаление файлов требует права записи (на 11+ спросит система).
+            if (Build.VERSION.SDK_INT <= 29) add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
     }
     val launcher = rememberLauncherForActivityResult(
@@ -134,8 +145,26 @@ fun MusicApp(vm: MusicViewModel) {
     var renameTarget by remember { mutableStateOf<PlaylistUi?>(null) }
     var deleteTarget by remember { mutableStateOf<PlaylistUi?>(null) }
 
+    // ---- Выбор и удаление треков ----
+    var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    val selecting = selectedIds.isNotEmpty()
+    var confirmDeleteTracks by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<List<Track>>(emptyList()) }
+    val deleteLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            vm.onTracksDeleted(pendingDelete)
+            Toast.makeText(context, "Удалено треков: ${pendingDelete.size}", Toast.LENGTH_SHORT).show()
+            selectedIds = emptySet()
+        }
+        pendingDelete = emptyList()
+    }
+    LaunchedEffect(tab) { selectedIds = emptySet() }
+
     val openPlaylist = playlists.firstOrNull { it.id == openPlaylistId }
     BackHandler(enabled = tab == 1 && openPlaylist != null) { openPlaylistId = null }
+    BackHandler(enabled = selecting) { selectedIds = emptySet() }
 
     val rec by vm.recommendations.collectAsState()
     // Первый заход на вкладку «Рекомендации» запускает подбор автоматически.
@@ -151,6 +180,7 @@ fun MusicApp(vm: MusicViewModel) {
                 title = {
                     Text(
                         when {
+                            selecting -> "Выбрано: ${selectedIds.size}"
                             tab == 0 -> "Библиотека"
                             tab == 2 -> "Рекомендации"
                             openPlaylist != null -> openPlaylist.name
@@ -161,15 +191,26 @@ fun MusicApp(vm: MusicViewModel) {
                     )
                 },
                 navigationIcon = {
-                    if (tab == 1 && openPlaylist != null) {
+                    if (selecting) {
+                        IconButton(onClick = { selectedIds = emptySet() }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Отменить выбор")
+                        }
+                    } else if (tab == 1 && openPlaylist != null) {
                         IconButton(onClick = { openPlaylistId = null }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
                         }
                     }
                 },
                 actions = {
-                    // Сортировка: в библиотеке и внутри открытого плейлиста.
-                    if (tab == 0 || (tab == 1 && openPlaylist != null)) {
+                    if (selecting) {
+                        IconButton(onClick = { selectedIds = tracks.map { it.id }.toSet() }) {
+                            Icon(Icons.Filled.SelectAll, contentDescription = "Выбрать все")
+                        }
+                        IconButton(onClick = { confirmDeleteTracks = true }) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Удалить")
+                        }
+                    } else if (tab == 0 || (tab == 1 && openPlaylist != null)) {
+                        // Сортировка: в библиотеке и внутри открытого плейлиста.
                         Box {
                             IconButton(onClick = { sortMenuOpen = true }) {
                                 Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Сортировка")
@@ -266,13 +307,26 @@ fun MusicApp(vm: MusicViewModel) {
                     tracks = tracks,
                     currentId = playerState.current?.id,
                     emptyText = "На устройстве не найдено музыки",
-                    onPlay = { index -> vm.player.playQueue(tracks, index) },
+                    onPlay = { index ->
+                        if (selecting) {
+                            val id = tracks[index].id
+                            selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+                        } else {
+                            vm.player.playQueue(tracks, index)
+                        }
+                    },
                     menuContent = { track, dismiss ->
                         DropdownMenuItem(
                             text = { Text("Добавить в плейлист") },
                             onClick = { dismiss(); trackToAdd = track }
                         )
-                    }
+                        DropdownMenuItem(
+                            text = { Text("Выбрать несколько") },
+                            onClick = { dismiss(); selectedIds = selectedIds + track.id }
+                        )
+                    },
+                    selected = if (selecting) selectedIds else null,
+                    onLongPress = { track -> selectedIds = selectedIds + track.id }
                 )
 
                 openPlaylist == null -> PlaylistList(
@@ -303,6 +357,39 @@ fun MusicApp(vm: MusicViewModel) {
     }
 
     // ---- Диалоги ----
+    if (confirmDeleteTracks) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteTracks = false },
+            title = { Text("Удалить выбранные треки (${selectedIds.size})?") },
+            text = {
+                Text("Файлы будут удалены с устройства без возможности восстановления и исчезнут из плейлистов.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDeleteTracks = false
+                    val list = tracks.filter { it.id in selectedIds }
+                    if (list.isNotEmpty()) {
+                        if (Build.VERSION.SDK_INT >= 30) {
+                            // Android 11+: система сама спросит подтверждение на удаление чужих файлов.
+                            pendingDelete = list
+                            val sender = MediaStore.createDeleteRequest(
+                                context.contentResolver,
+                                list.map { it.uri }
+                            ).intentSender
+                            deleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                        } else {
+                            vm.deleteDirect(list) { n ->
+                                Toast.makeText(context, "Удалено треков: $n", Toast.LENGTH_SHORT).show()
+                            }
+                            selectedIds = emptySet()
+                        }
+                    }
+                }) { Text("Удалить") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteTracks = false }) { Text("Отмена") } }
+        )
+    }
+
     trackToAdd?.let { track ->
         ChoosePlaylistDialog(
             playlists = playlists,
@@ -388,7 +475,10 @@ private fun TrackList(
     emptyText: String,
     onPlay: (Int) -> Unit,
     menuContent: @Composable (Track, () -> Unit) -> Unit,
-    header: (@Composable () -> Unit)? = null
+    header: (@Composable () -> Unit)? = null,
+    /** Отмеченные треки; null — режим выбора выключен. */
+    selected: Set<Long>? = null,
+    onLongPress: ((Track) -> Unit)? = null
 ) {
     if (tracks.isEmpty() && header == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(emptyText) }
@@ -397,23 +487,32 @@ private fun TrackList(
     LazyColumn(Modifier.fillMaxSize()) {
         if (header != null) item { header() }
         itemsIndexed(tracks, key = { _, t -> t.id }) { index, track ->
-            TrackRow(track, track.id == currentId, { onPlay(index) }, menuContent)
+            TrackRow(
+                track = track,
+                isCurrent = track.id == currentId,
+                onClick = { onPlay(index) },
+                menuContent = menuContent,
+                selected = selected?.contains(track.id),
+                onLongClick = onLongPress?.let { f -> { f(track) } }
+            )
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun TrackRow(
     track: Track,
     isCurrent: Boolean,
     onClick: () -> Unit,
-    menuContent: @Composable (Track, () -> Unit) -> Unit
+    menuContent: @Composable (Track, () -> Unit) -> Unit,
+    selected: Boolean? = null,
+    onLongClick: (() -> Unit)? = null
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val accent = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Unspecified
     ListItem(
-        modifier = Modifier.clickable(onClick = onClick),
+        modifier = Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
         headlineContent = {
             Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, color = accent)
         },
@@ -425,20 +524,27 @@ private fun TrackRow(
             )
         },
         leadingContent = {
-            Icon(
-                Icons.Filled.MusicNote,
-                contentDescription = null,
-                tint = if (isCurrent) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            if (selected != null) {
+                Checkbox(checked = selected, onCheckedChange = null)
+            } else {
+                Icon(
+                    Icons.Filled.MusicNote,
+                    contentDescription = null,
+                    tint = if (isCurrent) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         },
         trailingContent = {
-            Box {
-                IconButton(onClick = { menuOpen = true }) {
-                    Icon(Icons.Filled.MoreVert, contentDescription = "Меню")
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    menuContent(track) { menuOpen = false }
+            // В режиме выбора меню ⋮ скрыто, чтобы не мешать.
+            if (selected == null) {
+                Box {
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "Меню")
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        menuContent(track) { menuOpen = false }
+                    }
                 }
             }
         }

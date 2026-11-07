@@ -34,6 +34,10 @@ interface PlaylistDao {
 
     @Query("DELETE FROM playlist_tracks WHERE playlistId = :playlistId AND mediaId = :mediaId")
     suspend fun removeEntry(playlistId: Long, mediaId: Long)
+
+    /** Убирает треки из всех плейлистов (когда файлы удалены с устройства). */
+    @Query("DELETE FROM playlist_tracks WHERE mediaId IN (:mediaIds)")
+    suspend fun removeEntriesByMediaIds(mediaIds: List<Long>)
 }
 
 @Database(

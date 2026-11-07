@@ -8,6 +8,7 @@ import com.example.musicplayer.data.Recommender
 import com.example.musicplayer.data.PlaylistEntity
 import com.example.musicplayer.data.PlaylistTrackEntity
 import com.example.musicplayer.data.Track
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class PlaylistUi(val id: Long, val name: String, val tracks: List<Track>)
 
@@ -122,6 +124,31 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 RecUi(tracks = result)
             }
+        }
+    }
+
+    /** Android 10 и старше: удаляет файлы напрямую. [onDone] получает число удалённых. */
+    fun deleteDirect(list: List<Track>, onDone: (Int) -> Unit) {
+        viewModelScope.launch {
+            val resolver = getApplication<Application>().contentResolver
+            val deleted = withContext(Dispatchers.IO) {
+                list.filter { t ->
+                    runCatching { resolver.delete(t.uri, null, null) }.getOrDefault(0) > 0
+                }
+            }
+            onTracksDeleted(deleted)
+            onDone(deleted.size)
+        }
+    }
+
+    /** Вызывается, когда файлы уже удалены: чистит плейлисты, плеер и список библиотеки. */
+    fun onTracksDeleted(list: List<Track>) {
+        if (list.isEmpty()) return
+        val ids = list.map { it.id }
+        viewModelScope.launch {
+            ids.chunked(500).forEach { dao.removeEntriesByMediaIds(it) }
+            player.onTracksDeleted(ids.toSet())
+            _tracks.value = _tracks.value.filter { it.id !in ids }
         }
     }
 

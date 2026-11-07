@@ -181,6 +181,24 @@ class PlayerManager(context: Context) {
         _state.update { it.copy(positionMs = ms) }
     }
 
+    /** Файлы удалены: убираем их из очереди. Если играл удалённый трек — останавливаем плеер. */
+    fun onTracksDeleted(ids: Set<Long>) {
+        val s = _state.value
+        if (s.queue.none { it.id in ids }) return
+        val currentId = s.current?.id
+        val newQueue = s.queue.filter { it.id !in ids }
+        val newIndex = if (currentId == null) -1 else newQueue.indexOfFirst { it.id == currentId }
+        if (newIndex < 0) {
+            releasePlayer()
+            order = emptyList()
+            pos = 0
+            _state.value = PlayerState(shuffle = s.shuffle, repeatAll = s.repeatAll)
+        } else {
+            buildOrder(newQueue.size, newIndex, s.shuffle)
+            _state.update { it.copy(queue = newQueue, index = newIndex) }
+        }
+    }
+
     fun toggleShuffle() {
         val s = _state.value
         val on = !s.shuffle

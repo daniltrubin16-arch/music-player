@@ -77,6 +77,12 @@ class PlaybackService : Service() {
 
     private fun refresh() {
         val s = player.state.value
+        if (s.current == null) {
+            // Очередь пуста (например, удалили играющий трек): убираем уведомление и останавливаем сервис.
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
         val notification = buildNotification(s)
         if (s.isPlaying) {
             ServiceCompat.startForeground(
