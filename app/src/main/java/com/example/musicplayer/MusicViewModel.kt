@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.musicplayer.data.MediaRepository
+import com.example.musicplayer.data.Recommender
 import com.example.musicplayer.data.PlaylistEntity
 import com.example.musicplayer.data.PlaylistTrackEntity
 import com.example.musicplayer.data.Track
@@ -28,6 +29,13 @@ enum class SortMode(val label: String) {
         OLDEST -> list.sortedBy { it.dateAdded }
     }
 }
+
+/** Состояние вкладки «Рекомендации». */
+data class RecUi(
+    val loading: Boolean = false,
+    val tracks: List<Track> = emptyList(),
+    val error: String? = null
+)
 
 /** Порядок треков внутри плейлиста. Дата добавления здесь — момент, когда трек попал в плейлист. */
 enum class PlaylistSortMode(val label: String) {
@@ -98,6 +106,24 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _rec = MutableStateFlow(RecUi())
+    val recommendations: StateFlow<RecUi> = _rec.asStateFlow()
+
+    fun loadRecommendations() {
+        if (_rec.value.loading) return
+        val library = _tracks.value
+        if (library.isEmpty()) return
+        _rec.value = _rec.value.copy(loading = true, error = null)
+        viewModelScope.launch {
+            val result = Recommender.recommend(library)
+            _rec.value = if (result.isEmpty()) {
+                RecUi(error = "Не удалось подобрать музыку. Проверьте интернет и нажмите «Обновить».")
+            } else {
+                RecUi(tracks = result)
+            }
+        }
+    }
 
     fun refreshTracks() {
         viewModelScope.launch {

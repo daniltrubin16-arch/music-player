@@ -3,6 +3,8 @@ package com.example.musicplayer.ui.screens
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -28,6 +30,8 @@ import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -37,6 +41,7 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -74,6 +79,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.musicplayer.MusicViewModel
 import com.example.musicplayer.PlaylistSortMode
+import com.example.musicplayer.RecUi
 import com.example.musicplayer.PlaylistUi
 import com.example.musicplayer.SortMode
 import com.example.musicplayer.data.Track
@@ -129,7 +135,15 @@ fun MusicApp(vm: MusicViewModel) {
     var deleteTarget by remember { mutableStateOf<PlaylistUi?>(null) }
 
     val openPlaylist = playlists.firstOrNull { it.id == openPlaylistId }
-    BackHandler(enabled = openPlaylist != null) { openPlaylistId = null }
+    BackHandler(enabled = tab == 1 && openPlaylist != null) { openPlaylistId = null }
+
+    val rec by vm.recommendations.collectAsState()
+    // Первый заход на вкладку «Рекомендации» запускает подбор автоматически.
+    LaunchedEffect(tab, tracks.isNotEmpty()) {
+        if (tab == 2 && tracks.isNotEmpty() && rec.tracks.isEmpty() && !rec.loading && rec.error == null) {
+            vm.loadRecommendations()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -138,6 +152,7 @@ fun MusicApp(vm: MusicViewModel) {
                     Text(
                         when {
                             tab == 0 -> "Библиотека"
+                            tab == 2 -> "Рекомендации"
                             openPlaylist != null -> openPlaylist.name
                             else -> "Плейлисты"
                         },
@@ -154,7 +169,7 @@ fun MusicApp(vm: MusicViewModel) {
                 },
                 actions = {
                     // Сортировка: в библиотеке и внутри открытого плейлиста.
-                    if (tab == 0 || openPlaylist != null) {
+                    if (tab == 0 || (tab == 1 && openPlaylist != null)) {
                         Box {
                             IconButton(onClick = { sortMenuOpen = true }) {
                                 Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Сортировка")
@@ -216,6 +231,12 @@ fun MusicApp(vm: MusicViewModel) {
                         icon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null) },
                         label = { Text("Плейлисты") }
                     )
+                    NavigationBarItem(
+                        selected = tab == 2,
+                        onClick = { tab = 2 },
+                        icon = { Icon(Icons.Filled.Explore, contentDescription = null) },
+                        label = { Text("Рекомендации") }
+                    )
                 }
             }
         },
@@ -232,6 +253,14 @@ fun MusicApp(vm: MusicViewModel) {
         Box(Modifier.padding(padding).fillMaxSize()) {
             when {
                 !granted -> PermissionMessage { launcher.launch(allPermissions.toTypedArray()) }
+
+                tab == 2 -> RecommendationsScreen(
+                    rec = rec,
+                    hasLibrary = tracks.isNotEmpty(),
+                    currentId = playerState.current?.id,
+                    onRefresh = { vm.loadRecommendations() },
+                    onPlay = { index -> vm.player.playQueue(rec.tracks, index) }
+                )
 
                 tab == 0 -> TrackList(
                     tracks = tracks,
@@ -513,6 +542,84 @@ private fun PlaylistDetail(
             }
         }
     )
+}
+
+// ---------------- Рекомендации ----------------
+
+@Composable
+private fun RecommendationsScreen(
+    rec: RecUi,
+    hasLibrary: Boolean,
+    currentId: Long?,
+    onRefresh: () -> Unit,
+    onPlay: (Int) -> Unit
+) {
+    val context = LocalContext.current
+    fun open(url: String) {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    }
+
+    when {
+        !hasLibrary -> Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+            Text(
+                "Рекомендации подбираются по вашей музыке. Сначала добавьте песни на устройство.",
+                textAlign = TextAlign.Center
+            )
+        }
+
+        rec.loading && rec.tracks.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator()
+                Spacer(Modifier.padding(8.dp))
+                Text("Подбираю музыку…")
+            }
+        }
+
+        else -> TrackList(
+            tracks = rec.tracks,
+            currentId = currentId,
+            emptyText = "",
+            onPlay = onPlay,
+            menuContent = { track, dismiss ->
+                if (track.webUrl != null) {
+                    DropdownMenuItem(
+                        text = { Text("Открыть в Deezer") },
+                        onClick = { dismiss(); open(track.webUrl) }
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Найти на YouTube") },
+                    onClick = {
+                        dismiss()
+                        val q = Uri.encode("${track.artist} ${track.title}")
+                        open("https://www.youtube.com/results?search_query=$q")
+                    }
+                )
+            },
+            header = {
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    Text(
+                        "Подобрано по исполнителям из вашей библиотеки. " +
+                            "Играют 30-секундные превью; полную версию можно открыть через меню ⋮.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.padding(4.dp))
+                    OutlinedButton(onClick = onRefresh, enabled = !rec.loading) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null)
+                        Text(if (rec.loading) "Обновляю…" else "Обновить")
+                    }
+                    if (rec.error != null) {
+                        Spacer(Modifier.padding(4.dp))
+                        Text(rec.error, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        )
+    }
 }
 
 // ---------------- Мини-плеер ----------------

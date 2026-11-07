@@ -15,7 +15,9 @@ data class Track(
     val album: String,
     val durationMs: Long,
     /** Дата добавления файла на устройство, в секундах (MediaStore.DATE_ADDED). */
-    val dateAdded: Long = 0
+    val dateAdded: Long = 0,
+    /** Для рекомендаций из интернета: страница трека. У локальных треков null. */
+    val webUrl: String? = null
 )
 
 @Entity(tableName = "playlists")
