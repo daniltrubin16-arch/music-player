@@ -17,7 +17,8 @@ object MediaRepository {
             MediaStore.Audio.Media.TITLE,
             MediaStore.Audio.Media.ARTIST,
             MediaStore.Audio.Media.ALBUM,
-            MediaStore.Audio.Media.DURATION
+            MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.DATE_ADDED
         )
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND " +
             "${MediaStore.Audio.Media.DURATION} >= 10000"
@@ -30,6 +31,7 @@ object MediaRepository {
                 val artistCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
                 val albumCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
                 val durCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
+                val addedCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
                 while (c.moveToNext()) {
                     val id = c.getLong(idCol)
                     val artist = c.getString(artistCol)
@@ -41,7 +43,8 @@ object MediaRepository {
                         title = c.getString(titleCol) ?: "Без названия",
                         artist = artist,
                         album = c.getString(albumCol) ?: "",
-                        durationMs = c.getLong(durCol)
+                        durationMs = c.getLong(durCol),
+                        dateAdded = c.getLong(addedCol)
                     )
                 }
             }

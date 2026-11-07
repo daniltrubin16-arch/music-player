@@ -20,7 +20,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.random.Random
 
 data class PlayerState(
     val queue: List<Track> = emptyList(),
@@ -40,6 +39,21 @@ class PlayerManager(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var mediaPlayer: MediaPlayer? = null
     private var ticker: Job? = null
+
+    /** Порядок воспроизведения: индексы очереди. При перемешивании каждый трек встречается по разу за круг. */
+    private var order: List<Int> = emptyList()
+    private var pos = 0
+
+    private fun buildOrder(queueSize: Int, first: Int, shuffle: Boolean) {
+        if (shuffle) {
+            val rest = (0 until queueSize).filter { it != first }.shuffled()
+            order = listOf(first) + rest
+            pos = 0
+        } else {
+            order = (0 until queueSize).toList()
+            pos = first
+        }
+    }
 
     private val _state = MutableStateFlow(PlayerState())
     val state: StateFlow<PlayerState> = _state.asStateFlow()
@@ -61,13 +75,10 @@ class PlayerManager(context: Context) {
     /** Запускает очередь с позиции [startIndex]. [shuffle] != null — переключает режим перемешивания. */
     fun playQueue(queue: List<Track>, startIndex: Int, shuffle: Boolean? = null) {
         if (queue.isEmpty()) return
-        _state.update {
-            it.copy(
-                queue = queue,
-                index = startIndex.coerceIn(queue.indices),
-                shuffle = shuffle ?: it.shuffle
-            )
-        }
+        val start = startIndex.coerceIn(queue.indices)
+        val shuffleOn = shuffle ?: _state.value.shuffle
+        buildOrder(queue.size, start, shuffleOn)
+        _state.update { it.copy(queue = queue, index = start, shuffle = shuffleOn) }
         startCurrent()
     }
 
@@ -133,17 +144,23 @@ class PlayerManager(context: Context) {
     fun next(auto: Boolean = false) {
         val s = _state.value
         if (s.queue.isEmpty()) return
-        val nextIndex = when {
-            s.shuffle && s.queue.size > 1 ->
-                generateSequence { Random.nextInt(s.queue.size) }.first { it != s.index }
-            s.index + 1 < s.queue.size -> s.index + 1
-            s.repeatAll || !auto -> 0
-            else -> {
-                stop()
-                return
+        if (pos + 1 < order.size) {
+            pos++
+        } else if (s.repeatAll || !auto) {
+            // Круг закончился: новый круг. При перемешивании — заново, но первым не ставим только что сыгранный.
+            if (s.shuffle && s.queue.size > 1) {
+                var newOrder: List<Int>
+                do {
+                    newOrder = (0 until s.queue.size).shuffled()
+                } while (newOrder.first() == s.index)
+                order = newOrder
             }
+            pos = 0
+        } else {
+            stop()
+            return
         }
-        _state.update { it.copy(index = nextIndex) }
+        _state.update { it.copy(index = order[pos]) }
         startCurrent()
     }
 
@@ -154,8 +171,8 @@ class PlayerManager(context: Context) {
             seekTo(0)
             return
         }
-        val prevIndex = if (s.index - 1 >= 0) s.index - 1 else s.queue.lastIndex
-        _state.update { it.copy(index = prevIndex) }
+        pos = if (pos - 1 >= 0) pos - 1 else order.lastIndex
+        _state.update { it.copy(index = order[pos]) }
         startCurrent()
     }
 
@@ -164,7 +181,14 @@ class PlayerManager(context: Context) {
         _state.update { it.copy(positionMs = ms) }
     }
 
-    fun toggleShuffle() = _state.update { it.copy(shuffle = !it.shuffle) }
+    fun toggleShuffle() {
+        val s = _state.value
+        val on = !s.shuffle
+        if (s.queue.isNotEmpty() && s.index in s.queue.indices) {
+            buildOrder(s.queue.size, s.index, on)
+        }
+        _state.update { it.copy(shuffle = on) }
+    }
 
     fun toggleRepeat() = _state.update { it.copy(repeatAll = !it.repeatAll) }
 

@@ -26,6 +26,8 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -71,7 +73,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.musicplayer.MusicViewModel
+import com.example.musicplayer.PlaylistSortMode
 import com.example.musicplayer.PlaylistUi
+import com.example.musicplayer.SortMode
 import com.example.musicplayer.data.Track
 import com.example.musicplayer.player.PlayerManager
 import com.example.musicplayer.player.PlayerState
@@ -112,6 +116,9 @@ fun MusicApp(vm: MusicViewModel) {
     val tracks by vm.tracks.collectAsState()
     val playlists by vm.playlists.collectAsState()
     val playerState by vm.player.state.collectAsState()
+    val sortMode by vm.sortMode.collectAsState()
+    val playlistSort by vm.playlistSort.collectAsState()
+    var sortMenuOpen by remember { mutableStateOf(false) }
 
     var tab by remember { mutableIntStateOf(0) }
     var openPlaylistId by remember { mutableStateOf<Long?>(null) }
@@ -142,6 +149,52 @@ fun MusicApp(vm: MusicViewModel) {
                     if (tab == 1 && openPlaylist != null) {
                         IconButton(onClick = { openPlaylistId = null }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                        }
+                    }
+                },
+                actions = {
+                    // Сортировка: в библиотеке и внутри открытого плейлиста.
+                    if (tab == 0 || openPlaylist != null) {
+                        Box {
+                            IconButton(onClick = { sortMenuOpen = true }) {
+                                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Сортировка")
+                            }
+                            DropdownMenu(
+                                expanded = sortMenuOpen,
+                                onDismissRequest = { sortMenuOpen = false }
+                            ) {
+                                if (tab == 0) {
+                                    SortMode.values().forEach { mode ->
+                                        DropdownMenuItem(
+                                            text = { Text(mode.label) },
+                                            leadingIcon = {
+                                                if (mode == sortMode) {
+                                                    Icon(Icons.Filled.Check, contentDescription = null)
+                                                }
+                                            },
+                                            onClick = {
+                                                vm.setSortMode(mode)
+                                                sortMenuOpen = false
+                                            }
+                                        )
+                                    }
+                                } else {
+                                    PlaylistSortMode.values().forEach { mode ->
+                                        DropdownMenuItem(
+                                            text = { Text(mode.label) },
+                                            leadingIcon = {
+                                                if (mode == playlistSort) {
+                                                    Icon(Icons.Filled.Check, contentDescription = null)
+                                                }
+                                            },
+                                            onClick = {
+                                                vm.setPlaylistSort(mode)
+                                                sortMenuOpen = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

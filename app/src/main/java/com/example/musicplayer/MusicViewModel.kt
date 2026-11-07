@@ -17,19 +17,67 @@ import kotlinx.coroutines.launch
 
 data class PlaylistUi(val id: Long, val name: String, val tracks: List<Track>)
 
+enum class SortMode(val label: String) {
+    TITLE("По названию"),
+    NEWEST("Сначала новые"),
+    OLDEST("Сначала старые");
+
+    fun sort(list: List<Track>): List<Track> = when (this) {
+        TITLE -> list.sortedBy { it.title.lowercase() }
+        NEWEST -> list.sortedByDescending { it.dateAdded }
+        OLDEST -> list.sortedBy { it.dateAdded }
+    }
+}
+
+/** Порядок треков внутри плейлиста. Дата добавления здесь — момент, когда трек попал в плейлист. */
+enum class PlaylistSortMode(val label: String) {
+    ADDED("В порядке добавления"),
+    NEWEST("Сначала новые"),
+    TITLE("По названию")
+}
+
 class MusicViewModel(app: Application) : AndroidViewModel(app) {
     private val musicApp = app as MusicApplication
     private val dao = musicApp.database.playlistDao()
     val player = musicApp.player
 
+    private val prefs = app.getSharedPreferences("settings", Application.MODE_PRIVATE)
+
     private val _tracks = MutableStateFlow<List<Track>>(emptyList())
-    val tracks: StateFlow<List<Track>> = _tracks.asStateFlow()
+
+    private val _sortMode = MutableStateFlow(
+        runCatching { SortMode.valueOf(prefs.getString("sort", null) ?: "") }
+            .getOrDefault(SortMode.NEWEST)
+    )
+    val sortMode: StateFlow<SortMode> = _sortMode.asStateFlow()
+
+    /** Библиотека в выбранном порядке. Плейлисты сортировку не меняют. */
+    val tracks: StateFlow<List<Track>> = combine(_tracks, _sortMode) { list, mode ->
+        mode.sort(list)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun setSortMode(mode: SortMode) {
+        _sortMode.value = mode
+        prefs.edit().putString("sort", mode.name).apply()
+    }
+
+    private val _playlistSort = MutableStateFlow(
+        runCatching { PlaylistSortMode.valueOf(prefs.getString("playlist_sort", null) ?: "") }
+            .getOrDefault(PlaylistSortMode.ADDED)
+    )
+    val playlistSort: StateFlow<PlaylistSortMode> = _playlistSort.asStateFlow()
+
+    fun setPlaylistSort(mode: PlaylistSortMode) {
+        _playlistSort.value = mode
+        prefs.edit().putString("playlist_sort", mode.name).apply()
+    }
 
     val playlists: StateFlow<List<PlaylistUi>> = combine(
         dao.observePlaylists(),
         dao.observeAllEntries(),
-        _tracks
-    ) { lists, entries, tracks ->
+        _tracks,
+        _playlistSort
+    ) { lists, entries, tracks, sort ->
         val byId = tracks.associateBy { it.id }
         lists.map { p ->
             PlaylistUi(
@@ -37,7 +85,15 @@ class MusicViewModel(app: Application) : AndroidViewModel(app) {
                 name = p.name,
                 tracks = entries
                     .filter { it.playlistId == p.id }
-                    .sortedBy { it.id }
+                    .let { list ->
+                        when (sort) {
+                            PlaylistSortMode.ADDED -> list.sortedBy { it.id }
+                            PlaylistSortMode.NEWEST -> list.sortedByDescending { it.id }
+                            PlaylistSortMode.TITLE -> list.sortedBy {
+                                byId[it.mediaId]?.title?.lowercase() ?: ""
+                            }
+                        }
+                    }
                     .mapNotNull { byId[it.mediaId] }
             )
         }
